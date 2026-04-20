@@ -3,32 +3,41 @@ import numpy as np
 import os
 
 # CONFIGURATION
-CHECKERBOARD = (9, 6)  # Inner corners (cols, rows)
-SQUARE_SIZE = 30  # mm
-FRAME_STEP = 3  # Use every Nth frame to avoid near-duplicates
+CHECKERBOARD = (7, 9)  # Inner corners (cols, rows)
+SQUARE_SIZE = 20.5  # mm
+FRAME_STEP = 1  # Use every Nth frame to avoid near-duplicates
 MAX_PAIRS = 80  # Upper bound on accepted stereo pairs
-MIN_PAIRS = 20  # Minimum accepted pairs required to calibrate
-MIN_BOARD_AREA_RATIO = 0.035  # Reject tiny checkerboard detections
-MIN_BORDER_PX = 18  # Reject detections too close to image borders
+MIN_PAIRS = 8  # Minimum accepted pairs required to calibrate
+MIN_BOARD_AREA_RATIO = 0.012  # Reject tiny checkerboard detections
+MIN_BORDER_PX = 8  # Reject detections too close to image borders
 
 # Preferred input names (first existing pair is used)
 LEFT_VIDEO_CANDIDATES = [
+    "/Users/emilyan/Downloads/videos 2/cam_L.avi",
+    "videos 2/cam_L.avi",
+    "calibration/videos 2/cam_L.avi",
     "cam_L_32mm.avi",
     "calibration/videos/cam_L.avi",
     "cam_L.avi",
 ]
 RIGHT_VIDEO_CANDIDATES = [
+    "/Users/emilyan/Downloads/videos 2/cam_R.avi",
+    "videos 2/cam_R.avi",
+    "calibration/videos 2/cam_R.avi",
     "cam_R_32mm.avi",
     "calibration/videos/cam_R.avi",
     "cam_R.avi",
 ]
 
-criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 60, 0.001)
 classic_flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
 sb_flags = cv2.CALIB_CB_EXHAUSTIVE + cv2.CALIB_CB_ACCURACY
 
 debug_dir = "calibration_debug"
 os.makedirs(debug_dir, exist_ok=True)
+
+# Avoid OpenCL binary-cache/runtime issues on macOS during calibration.
+cv2.ocl.setUseOpenCL(False)
 
 
 def resolve_video_path(candidates):
