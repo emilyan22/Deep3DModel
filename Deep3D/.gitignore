@@ -133,3 +133,12 @@ dmypy.json
 /tmp
 /result
 /results
+
+# Training/inference dataset videos (keep local, do not track in git)
+/data/ground/*.avi
+/data/left/*.avi
+/data/right/*.avi
+
+# Frontend dependency/build artifacts
+/front-end/node_modules/
+/front-end/node_modules/.vite/
