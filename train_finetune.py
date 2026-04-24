@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader, Dataset, Subset
 
 
@@ -88,11 +89,13 @@ class StereoVideoDataset(Dataset):
         alpha: int,
         frame_stride: int,
         max_frames_per_video: int,
+        augment: bool = False,
     ) -> None:
         self.triplets = triplets
         self.width, self.height = size
         self.alpha = alpha
         self.frame_stride = frame_stride
+        self.augment = augment
         self.index_map: List[Tuple[int, int]] = []
         self.captures: Dict[Tuple[int, str], cv2.VideoCapture] = {}
 
@@ -147,6 +150,23 @@ class StereoVideoDataset(Dataset):
 
         target_right = self._read_frame(t_idx, "right", f)
         target_ground = self._read_frame(t_idx, "ground", f)
+
+        if self.augment:
+            # Color jitter applied consistently to all left input frames only.
+            # x0/target_right/target_ground are NOT jittered to preserve target accuracy.
+            brightness = random.uniform(0.7, 1.3)
+            contrast = random.uniform(0.8, 1.2)
+            saturation = random.uniform(0.8, 1.2)
+            hue = random.uniform(-0.1, 0.1)
+
+            def _jitter(t: torch.Tensor) -> torch.Tensor:
+                t = TF.adjust_brightness(t, brightness)
+                t = TF.adjust_contrast(t, contrast)
+                t = TF.adjust_saturation(t, saturation)
+                t = TF.adjust_hue(t, hue)
+                return t
+
+            x1, x2, x3, x4, x5 = _jitter(x1), _jitter(x2), _jitter(x3), _jitter(x4), _jitter(x5)
 
         model_input = torch.cat((x1, x2, x0, x3, x4, x5), dim=0)
         return {
@@ -203,6 +223,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-height", type=int, default=360)
     parser.add_argument("--train-split", type=float, default=0.9)
     parser.add_argument("--ground-loss-weight", type=float, default=0.0)
+    parser.add_argument("--parallax-loss-weight", type=float, default=0.1,
+                        help="weight for anti-collapse loss: penalizes pred being identical to left input")
+    parser.add_argument("--augment", action="store_true", default=False,
+                        help="enable color jitter augmentation on left input frames")
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--seed", type=int, default=42)
     return parser.parse_args()
@@ -225,6 +249,7 @@ def main() -> None:
         alpha=args.alpha,
         frame_stride=args.frame_stride,
         max_frames_per_video=args.max_frames_per_video,
+        augment=args.augment,
     )
     if len(dataset) == 0:
         raise RuntimeError("Dataset is empty after frame sampling settings.")
@@ -310,6 +335,7 @@ def main() -> None:
         best_val_l1 = float(ckpt.get("best_val_l1", best_val_l1))
         print(f"[INFO] Resumed from {resume_path} at epoch {start_epoch}")
 
+    global_step = 0
     for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         train_l1 = 0.0
@@ -324,7 +350,11 @@ def main() -> None:
             with torch.cuda.amp.autocast(enabled=use_amp):
                 pred = model(x)
                 loss_right = F.l1_loss(pred, y_right)
-                loss = loss_right
+                # x3 is the center left frame: channels 9:12 in the 6-frame×3ch input.
+                # Negative L1 against left input forces pred away from identity mapping.
+                x3_left = x[:, 9:12, :, :]
+                loss_parallax = -F.l1_loss(pred, x3_left)
+                loss = loss_right + args.parallax_loss_weight * loss_parallax
                 if args.ground_loss_weight > 0:
                     loss_ground = F.l1_loss(pred, y_ground)
                     loss = loss + args.ground_loss_weight * loss_ground
@@ -332,6 +362,15 @@ def main() -> None:
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
+
+            global_step += 1
+            if global_step <= 50:
+                print(
+                    f"[step {global_step:03d}] loss_right={loss_right.item():.6f} "
+                    f"loss_parallax(raw)={-loss_parallax.item():.6f} "
+                    f"ratio={(-loss_parallax.item() / max(loss_right.item(), 1e-9)):.2f}x",
+                    flush=True,
+                )
 
             bs = x.size(0)
             train_l1 += loss_right.item() * bs
