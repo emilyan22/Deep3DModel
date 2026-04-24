@@ -38,6 +38,8 @@ python -u train_finetune.py \
   --batch-size 4 \
   --lr 1e-4 \
   --frame-stride 2 \
-  --ground-loss-weight 0.0 \
+  --ground-loss-weight 0.5 \
+  --parallax-loss-weight 0.1 \
+  --augment \
   --save-dir checkpoints \
   --resume auto
