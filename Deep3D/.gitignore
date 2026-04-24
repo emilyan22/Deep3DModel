@@ -132,7 +132,6 @@ dmypy.json
 /export
 /tmp
 /result
-/results
 
 # Training/inference dataset videos (keep local, do not track in git)
 /data/ground/*.avi
