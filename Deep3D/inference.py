@@ -14,6 +14,7 @@ from utils import util,ffmpeg
 parser = argparse.ArgumentParser()
 parser.add_argument("--gpu_id", default=0, type=int,help="choose your device")
 parser.add_argument("--model", default='./export/deep3d_v1.0_640x360_cpu.pt', type=str,help="input model path")
+parser.add_argument("--finetuned-ckpt", default='', type=str, help="fine-tuned checkpoint path (.pt) to load with model.load_state_dict")
 parser.add_argument("--video", default='./samples/waterbottle.mp4', type=str,help="input video path")
 parser.add_argument("--out", default='./results/waterbottle_3d.mp4', type=str,help="output video path")
 parser.add_argument('--inv', action='store_true', help='some video need to reverse left and right views')
@@ -22,6 +23,29 @@ opt = parser.parse_args()
 
 
 net = torch.jit.load(opt.model)
+loaded_finetuned_torchscript = False
+if opt.finetuned_ckpt:
+    # Support both formats:
+    # 1) TorchScript archive (.pt) -> replace net directly
+    # 2) state-dict checkpoint (.pt/.pth) -> load_state_dict into net
+    try:
+        scripted_model = torch.jit.load(opt.finetuned_ckpt, map_location="cpu")
+        net = scripted_model
+        loaded_finetuned_torchscript = True
+        print(f"Loaded fine-tuned TorchScript model: {opt.finetuned_ckpt}")
+    except Exception:
+        try:
+            checkpoint = torch.load(opt.finetuned_ckpt, map_location="cpu", weights_only=False)
+        except TypeError:
+            # Older torch versions do not support weights_only kwarg.
+            checkpoint = torch.load(opt.finetuned_ckpt, map_location="cpu")
+
+        state_dict = checkpoint["model_state"] if isinstance(checkpoint, dict) and "model_state" in checkpoint else checkpoint
+        load_result = net.load_state_dict(state_dict, strict=False)
+        print(
+            f"Loaded fine-tuned checkpoint: {opt.finetuned_ckpt} "
+            f"(missing={len(load_result.missing_keys)}, unexpected={len(load_result.unexpected_keys)})"
+        )
 net.eval()
 process = transform.PreProcess()
 
@@ -98,6 +122,7 @@ x0 = frames_pool[0]
 if opt.gpu_id >= 0:
     x0 = x0.to(device).half()
 x0 = process(x0)
+fallback_to_base_done = False
 
 print("start inference...")
 for frame in tqdm(range(video_length)):
@@ -129,7 +154,28 @@ for frame in tqdm(range(video_length)):
     input_data = input_data.reshape(1,*input_data.shape)
     
     with torch.no_grad():
-        out = net(input_data)
+        try:
+            out = net(input_data)
+        except RuntimeError as exc:
+            err = str(exc)
+            # Some finetuned TorchScript exports were traced with a hardcoded cuda:0 op.
+            # On CPU-only machines this fails at runtime; fall back to the base model.
+            if (
+                loaded_finetuned_torchscript
+                and not torch.cuda.is_available()
+                and not fallback_to_base_done
+                and "cuda:0" in err
+            ):
+                print(
+                    "[WARN] Finetuned TorchScript uses hardcoded CUDA ops and cannot run on CPU. "
+                    f"Falling back to base model: {opt.model}"
+                )
+                net = torch.jit.load(opt.model)
+                net.eval()
+                fallback_to_base_done = True
+                out = net(input_data)
+            else:
+                raise
         x0 = out.clone().detach()[0]
     
     left = x3

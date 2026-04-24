@@ -19,6 +19,9 @@ OUTPUT_DIR = ROOT_DIR / "backend" / "outputs"
 # Switch models by changing MODEL_PATH env var. Example:
 # MODEL_PATH=Deep3D/export/deep3d_v1.0_640x360_cpu.pt
 MODEL_PATH = Path(os.getenv("MODEL_PATH", str(DEEP3D_DIR / "export" / "deep3d_v1.0_640x360_cpu.pt")))
+# Default to repo-level ff.pt for fine-tuned weights; allow override via env.
+_finetuned_ckpt_env = os.getenv("FINETUNED_CKPT_PATH", str(ROOT_DIR / "ff.pt")).strip()
+FINETUNED_CKPT_PATH = Path(_finetuned_ckpt_env) if _finetuned_ckpt_env else None
 INFERENCE_TIMEOUT_SECONDS = int(os.getenv("INFERENCE_TIMEOUT_SECONDS", "7200"))
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -106,6 +109,8 @@ def get_config() -> dict:
     return {
         "model_path": str(MODEL_PATH),
         "model_exists": MODEL_PATH.exists(),
+        "finetuned_ckpt_path": str(FINETUNED_CKPT_PATH) if FINETUNED_CKPT_PATH else None,
+        "finetuned_ckpt_exists": FINETUNED_CKPT_PATH.exists() if FINETUNED_CKPT_PATH else False,
         "inference_timeout_seconds": INFERENCE_TIMEOUT_SECONDS,
         "ffmpeg_on_path": shutil.which("ffmpeg") is not None,
         "ffprobe_on_path": shutil.which("ffprobe") is not None,
@@ -127,6 +132,14 @@ async def convert_video(
                 f"Model file not found at {MODEL_PATH}. "
                 "From the repo root run: python3 scripts/download_deep3d_model.py "
                 "Then restart the API. Or set MODEL_PATH to an existing .pt file."
+            ),
+        )
+    if FINETUNED_CKPT_PATH and not FINETUNED_CKPT_PATH.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Fine-tuned checkpoint not found at {FINETUNED_CKPT_PATH}. "
+                "Set FINETUNED_CKPT_PATH to your trained checkpoint (e.g. checkpoints/best.pt)."
             ),
         )
 
@@ -178,6 +191,8 @@ async def convert_video(
         "--tmpdir",
         str(tmp_dir),
     ]
+    if FINETUNED_CKPT_PATH:
+        cmd.extend(["--finetuned-ckpt", str(FINETUNED_CKPT_PATH)])
     if inv:
         cmd.append("--inv")
 

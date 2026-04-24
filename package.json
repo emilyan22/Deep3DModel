@@ -4,6 +4,11 @@
   "scripts": {
     "dev": "npm run dev --prefix Deep3D/front-end",
     "frontend": "npm run dev --prefix Deep3D/front-end",
-    "backend": "./.venv/bin/python -m uvicorn backend.app:app --reload --host 0.0.0.0 --port 8000"
+    "backend": "./.venv/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000",
+    "backend:dev": "./.venv/bin/python -m uvicorn backend.app:app --reload --reload-dir backend --host 0.0.0.0 --port 8000",
+    "local": "concurrently -n frontend,backend -c green,blue \"npm run frontend\" \"npm run backend\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
   }
 }
