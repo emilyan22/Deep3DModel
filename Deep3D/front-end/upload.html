@@ -160,14 +160,9 @@
       stroke-width: 2;
     }
 
-    .model-status {
+    .model-spacer {
       margin-top: 0.35rem;
-      font-size: 0.92rem;
-      font-weight: 600;
-      color: #3f5f3f;
-      max-width: 32rem;
-      line-height: 1.35;
-      word-break: break-word;
+      height: 1.3rem;
     }
 
     .file-input {
@@ -436,7 +431,7 @@
         <div class="upload-card-main">
           <button type="button" class="upload-btn" id="upload-trigger">Upload Video</button>
           <p class="upload-hint">or drop a video file here</p>
-          <p class="model-status" id="model-status" aria-hidden="true">&nbsp;</p>
+          <div class="model-spacer" aria-hidden="true"></div>
           <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
             <polyline points="17 8 12 3 7 8" />
@@ -521,7 +516,6 @@
     const downloadLink = document.getElementById("download-link");
     const sessionHistoryEl = document.getElementById("session-history");
     const historyStrip = document.getElementById("history-strip");
-    const modelStatus = document.getElementById("model-status");
 
     let isConverting = false;
     let currentHistoryId = null;
@@ -615,18 +609,6 @@
       return entry;
     }
 
-    function basename(pathValue) {
-      if (!pathValue) return "";
-      const normalized = String(pathValue).replace(/\\/g, "/");
-      const parts = normalized.split("/");
-      return parts[parts.length - 1] || normalized;
-    }
-
-    async function loadModelStatus() {
-      if (!modelStatus) return;
-      modelStatus.innerHTML = "&nbsp;";
-    }
-
     async function startConversion() {
       if (!fileInput.files || fileInput.files.length === 0) return;
       if (isConverting) return;
@@ -673,7 +655,6 @@
         resultVideo.src = entry.outputUrl;
         resultVideo.hidden = false;
         setDownloadEnabled(entry.downloadUrl, entry.outputFile);
-        if (modelStatus) modelStatus.innerHTML = "&nbsp;";
         resultVideo.play().catch(() => {});
       } catch (error) {
         processingBlock.hidden = true;
@@ -739,7 +720,6 @@
       if (file) setFile(file);
     });
 
-    loadModelStatus();
   </script>
 </body>
 </html>

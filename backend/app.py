@@ -20,11 +20,8 @@ OUTPUT_DIR = ROOT_DIR / "backend" / "outputs"
 
 # Switch models by changing MODEL_PATH env var. Example:
 # MODEL_PATH=Deep3D/export/deep3d_v1.0_640x360_cpu.pt
-# Prefer the newly pulled fine-tuned model when present.
-_default_model_path = ROOT_DIR / "checkpoints" / "finetuned_final.pt"
-if not _default_model_path.exists():
-    _default_model_path = DEEP3D_DIR / "export" / "deep3d_v1.0_640x360_cpu.pt"
-MODEL_PATH = Path(os.getenv("MODEL_PATH", str(_default_model_path)))
+# Match finetune-rebased default model path; override via MODEL_PATH env var.
+MODEL_PATH = Path(os.getenv("MODEL_PATH", str(DEEP3D_DIR / "export" / "deep3d_v1.0_640x360_cpu.pt")))
 CPU_FALLBACK_MODEL_PATH = DEEP3D_DIR / "export" / "deep3d_v1.0_640x360_cpu.pt"
 INFERENCE_TIMEOUT_SECONDS = int(os.getenv("INFERENCE_TIMEOUT_SECONDS", "7200"))
 
