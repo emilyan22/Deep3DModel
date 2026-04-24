@@ -3,8 +3,10 @@ import shutil
 import subprocess
 import sys
 import uuid
+from functools import lru_cache
 from pathlib import Path
 
+import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -18,10 +20,12 @@ OUTPUT_DIR = ROOT_DIR / "backend" / "outputs"
 
 # Switch models by changing MODEL_PATH env var. Example:
 # MODEL_PATH=Deep3D/export/deep3d_v1.0_640x360_cpu.pt
-MODEL_PATH = Path(os.getenv("MODEL_PATH", str(DEEP3D_DIR / "export" / "deep3d_v1.0_640x360_cpu.pt")))
-# Default to repo-level ff.pt for fine-tuned weights; allow override via env.
-_finetuned_ckpt_env = os.getenv("FINETUNED_CKPT_PATH", str(ROOT_DIR / "ff.pt")).strip()
-FINETUNED_CKPT_PATH = Path(_finetuned_ckpt_env) if _finetuned_ckpt_env else None
+# Prefer the newly pulled fine-tuned model when present.
+_default_model_path = ROOT_DIR / "checkpoints" / "finetuned_final.pt"
+if not _default_model_path.exists():
+    _default_model_path = DEEP3D_DIR / "export" / "deep3d_v1.0_640x360_cpu.pt"
+MODEL_PATH = Path(os.getenv("MODEL_PATH", str(_default_model_path)))
+CPU_FALLBACK_MODEL_PATH = DEEP3D_DIR / "export" / "deep3d_v1.0_640x360_cpu.pt"
 INFERENCE_TIMEOUT_SECONDS = int(os.getenv("INFERENCE_TIMEOUT_SECONDS", "7200"))
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -85,6 +89,25 @@ def _require_ffmpeg_bins() -> None:
         )
 
 
+@lru_cache(maxsize=8)
+def _torchscript_compatibility(model_path_str: str) -> dict:
+    model_path = Path(model_path_str)
+    if not model_path.exists():
+        return {"exists": False, "compatible": False, "reason": "model file not found"}
+    try:
+        scripted = torch.jit.load(str(model_path), map_location="cpu")
+        code = str(scripted.code)
+        if 'torch.device("cuda:0")' in code:
+            return {
+                "exists": True,
+                "compatible": False,
+                "reason": "CUDA-only TorchScript graph; this host will require CPU fallback",
+            }
+        return {"exists": True, "compatible": True, "reason": "model appears host-compatible"}
+    except Exception as exc:
+        return {"exists": True, "compatible": False, "reason": f"model load check failed: {type(exc).__name__}"}
+
+
 app = FastAPI(title="Deep3D API", version="0.1.0")
 
 # Allow any localhost / 127.0.0.1 origin with any port (Vite, Live Server, etc.)
@@ -106,11 +129,14 @@ def health_check() -> dict:
 
 @app.get("/api/config")
 def get_config() -> dict:
+    preferred_status = _torchscript_compatibility(str(MODEL_PATH))
     return {
         "model_path": str(MODEL_PATH),
         "model_exists": MODEL_PATH.exists(),
-        "finetuned_ckpt_path": str(FINETUNED_CKPT_PATH) if FINETUNED_CKPT_PATH else None,
-        "finetuned_ckpt_exists": FINETUNED_CKPT_PATH.exists() if FINETUNED_CKPT_PATH else False,
+        "model_host_compatible": preferred_status["compatible"],
+        "model_host_compatibility_reason": preferred_status["reason"],
+        "cpu_fallback_model_path": str(CPU_FALLBACK_MODEL_PATH),
+        "cpu_fallback_model_exists": CPU_FALLBACK_MODEL_PATH.exists(),
         "inference_timeout_seconds": INFERENCE_TIMEOUT_SECONDS,
         "ffmpeg_on_path": shutil.which("ffmpeg") is not None,
         "ffprobe_on_path": shutil.which("ffprobe") is not None,
@@ -134,15 +160,6 @@ async def convert_video(
                 "Then restart the API. Or set MODEL_PATH to an existing .pt file."
             ),
         )
-    if FINETUNED_CKPT_PATH and not FINETUNED_CKPT_PATH.exists():
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                f"Fine-tuned checkpoint not found at {FINETUNED_CKPT_PATH}. "
-                "Set FINETUNED_CKPT_PATH to your trained checkpoint (e.g. checkpoints/best.pt)."
-            ),
-        )
-
     _require_ffmpeg_bins()
 
     suffix = Path(file.filename or "upload.mp4").suffix.lower()
@@ -179,26 +196,35 @@ async def convert_video(
     else:
         video_for_inference = input_path
 
-    cmd = [
-        sys.executable,
-        str(INFERENCE_SCRIPT),
-        "--model",
-        str(MODEL_PATH),
-        "--video",
-        str(video_for_inference),
-        "--out",
-        str(output_path),
-        "--tmpdir",
-        str(tmp_dir),
-    ]
-    if FINETUNED_CKPT_PATH:
-        cmd.extend(["--finetuned-ckpt", str(FINETUNED_CKPT_PATH)])
-    if inv:
-        cmd.append("--inv")
+    def _build_cmd(model_path: Path) -> list[str]:
+        cmd = [
+            sys.executable,
+            str(INFERENCE_SCRIPT),
+            "--model",
+            str(model_path),
+            "--video",
+            str(video_for_inference),
+            "--out",
+            str(output_path),
+            "--tmpdir",
+            str(tmp_dir),
+        ]
+        if inv:
+            cmd.append("--inv")
+        return cmd
+
+    def _looks_like_cuda_locked_model(error_text: str) -> bool:
+        e = error_text.lower()
+        return (
+            "device=torch.device(\"cuda:0\")" in e
+            or "arguments from the 'cuda' backend" in e
+            or "could not run 'aten::empty_strided'" in e
+        )
 
     try:
+        used_model = MODEL_PATH
         subprocess.run(
-            cmd,
+            _build_cmd(used_model),
             cwd=str(DEEP3D_DIR),
             check=True,
             capture_output=True,
@@ -208,8 +234,38 @@ async def convert_video(
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="Inference timed out") from exc
     except subprocess.CalledProcessError as exc:
-        error_log = (exc.stderr or exc.stdout or "Inference failed")[-3000:]
-        raise HTTPException(status_code=500, detail=error_log) from exc
+        primary_error = exc.stderr or exc.stdout or "Inference failed"
+        can_fallback = (
+            MODEL_PATH != CPU_FALLBACK_MODEL_PATH
+            and CPU_FALLBACK_MODEL_PATH.exists()
+            and _looks_like_cuda_locked_model(primary_error)
+        )
+        if can_fallback:
+            try:
+                used_model = CPU_FALLBACK_MODEL_PATH
+                subprocess.run(
+                    _build_cmd(used_model),
+                    cwd=str(DEEP3D_DIR),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=INFERENCE_TIMEOUT_SECONDS,
+                )
+            except subprocess.CalledProcessError as fallback_exc:
+                fallback_error = fallback_exc.stderr or fallback_exc.stdout or "Fallback inference failed"
+                error_log = (
+                    "Fine-tuned model appears CUDA-only on this machine and fallback model failed.\n\n"
+                    f"Primary model: {MODEL_PATH}\n"
+                    f"Fallback model: {CPU_FALLBACK_MODEL_PATH}\n\n"
+                    f"Primary error:\n{primary_error[-1200:]}\n\n"
+                    f"Fallback error:\n{fallback_error[-1200:]}"
+                )
+                raise HTTPException(status_code=500, detail=error_log) from fallback_exc
+            except subprocess.TimeoutExpired as fallback_timeout:
+                raise HTTPException(status_code=504, detail="Fallback inference timed out") from fallback_timeout
+        else:
+            error_log = (primary_error or "Inference failed")[-3000:]
+            raise HTTPException(status_code=500, detail=error_log) from exc
 
     if not output_path.exists():
         raise HTTPException(status_code=500, detail="Output file was not generated")
@@ -218,6 +274,8 @@ async def convert_video(
         "job_id": job_id,
         "output_file": output_path.name,
         "download_url": f"/api/downloads/{output_path.name}",
+        "model_used": str(used_model),
+        "used_cpu_fallback": str(used_model) == str(CPU_FALLBACK_MODEL_PATH),
     }
 
 

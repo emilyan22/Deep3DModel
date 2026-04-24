@@ -44,7 +44,18 @@ else:
     opt.gpu_id = -1
     print("Using CPU")
 
-net = torch.jit.load(opt.model, map_location=device)
+try:
+    net = torch.jit.load(opt.model, map_location=device)
+except TypeError as exc:
+    # Some TorchScript checkpoints include float64 tensors that MPS cannot load.
+    # Fall back to CPU so inference can proceed on Apple Silicon machines.
+    if device.type == "mps" and "Cannot convert a MPS Tensor to float64 dtype" in str(exc):
+        print("MPS load failed due to float64 tensors; falling back to CPU.")
+        device = torch.device("cpu")
+        opt.gpu_id = -1
+        net = torch.jit.load(opt.model, map_location=device)
+    else:
+        raise
 if opt.gpu_id >= 0:
     net.half()
 net.eval()
@@ -52,11 +63,24 @@ process = transform.PreProcess()
 if opt.gpu_id >= 0:
     process.to(device).half()
 
-out_width  = int(os.path.basename(opt.model).split('_')[2].split('x')[0])
-out_height = int(os.path.basename(opt.model).split('_')[2].split('x')[1])
-
 fps,duration,height,width = ffmpeg.get_video_infos(opt.video)
 video_length = int(fps*duration)
+
+def infer_model_resolution(model_path, fallback_w, fallback_h):
+    model_name = os.path.basename(model_path)
+    # Expected pattern in original checkpoints: *_<width>x<height>_*.pt
+    try:
+        size_token = model_name.split('_')[2]
+        w_str, h_str = size_token.split('x')
+        return int(w_str), int(h_str)
+    except Exception:
+        print(
+            f"Could not parse resolution from model name '{model_name}'. "
+            f"Falling back to input video size {fallback_w}x{fallback_h}."
+        )
+        return int(fallback_w), int(fallback_h)
+
+out_width, out_height = infer_model_resolution(opt.model, width, height)
 
 util.clean_tempfiles(opt.tmpdir)
 util.makedirs(os.path.split(opt.out)[0])
