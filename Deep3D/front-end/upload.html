@@ -521,6 +521,7 @@
     let currentHistoryId = null;
     const sessionHistory = [];
     let historyIdSeq = 0;
+    let playerLoadWatcher = null;
 
     function showUploadView() {
       viewUpload.hidden = false;
@@ -546,13 +547,50 @@
       downloadLink.removeAttribute("download");
     }
 
+    function clearPlayerLoadWatcher() {
+      if (!playerLoadWatcher) return;
+      resultVideo.removeEventListener("loadeddata", playerLoadWatcher.onLoadedData);
+      resultVideo.removeEventListener("error", playerLoadWatcher.onError);
+      window.clearTimeout(playerLoadWatcher.timerId);
+      playerLoadWatcher = null;
+    }
+
+    function loadVideoSource(url, onFailure) {
+      clearPlayerLoadWatcher();
+      resultVideo.pause();
+      resultVideo.removeAttribute("src");
+      resultVideo.load();
+
+      const fail = (message) => {
+        clearPlayerLoadWatcher();
+        if (typeof onFailure === "function") onFailure(message);
+      };
+
+      const onLoadedData = () => {
+        clearPlayerLoadWatcher();
+        resultVideo.play().catch(() => {});
+      };
+      const onError = () => fail("Could not load this video.");
+      const timerId = window.setTimeout(() => fail("This video took too long to load."), 45000);
+      playerLoadWatcher = { onLoadedData, onError, timerId };
+      resultVideo.addEventListener("loadeddata", onLoadedData, { once: true });
+      resultVideo.addEventListener("canplay", onLoadedData, { once: true });
+      resultVideo.addEventListener("error", onError, { once: true });
+      resultVideo.src = url;
+      resultVideo.load();
+    }
+
     function applyVideoFromEntry(entry) {
       currentHistoryId = entry.id;
-      resultVideo.src = entry.outputUrl;
       resultVideo.hidden = false;
       processingBlock.hidden = true;
       resultError.hidden = true;
       setDownloadEnabled(entry.downloadUrl, entry.outputFile);
+      loadVideoSource(entry.outputUrl, (message) => {
+        resultVideo.hidden = true;
+        resultError.hidden = false;
+        resultError.textContent = message;
+      });
       document.querySelectorAll(".history-item").forEach((el) => {
         el.classList.toggle("is-current", Number(el.dataset.id) === entry.id);
       });
@@ -642,21 +680,28 @@
         }
 
         const payload = await response.json();
-        const outputUrl = `${API_BASE}${payload.download_url}`;
+        const playbackPath = payload.playback_url || payload.download_url;
+        const outputUrl = `${API_BASE}${playbackPath}`;
+        const downloadUrl = `${API_BASE}${payload.download_url}`;
         const entry = addHistoryEntry({
           inputName,
           outputUrl,
-          downloadUrl: outputUrl,
+          downloadUrl,
           outputFile: payload.output_file || "output.mp4",
         });
 
         processingBlock.hidden = true;
         resultError.hidden = true;
-        resultVideo.src = entry.outputUrl;
         resultVideo.hidden = false;
         setDownloadEnabled(entry.downloadUrl, entry.outputFile);
-        resultVideo.play().catch(() => {});
+        loadVideoSource(entry.outputUrl, (message) => {
+          resultVideo.hidden = true;
+          resultError.hidden = false;
+          resultError.textContent = message;
+          setDownloadDisabled();
+        });
       } catch (error) {
+        clearPlayerLoadWatcher();
         processingBlock.hidden = true;
         resultVideo.hidden = true;
         resultError.hidden = false;
@@ -685,8 +730,11 @@
 
     uploadAnotherBtn.addEventListener("click", () => {
       if (isConverting) return;
+      clearPlayerLoadWatcher();
+      resultVideo.pause();
       fileInput.value = "";
       resultVideo.removeAttribute("src");
+      resultVideo.load();
       resultError.hidden = true;
       setDownloadDisabled();
       showUploadView();

@@ -20,10 +20,12 @@ OUTPUT_DIR = ROOT_DIR / "backend" / "outputs"
 
 # Switch models by changing MODEL_PATH env var. Example:
 # MODEL_PATH=Deep3D/export/deep3d_v1.0_640x360_cpu.pt
-# Match finetune-rebased defaults; override via env.
+# Match plain inference.py defaults unless overridden via env.
 MODEL_PATH = Path(os.getenv("MODEL_PATH", str(DEEP3D_DIR / "export" / "deep3d_v1.0_640x360_cpu.pt")))
-_finetuned_ckpt_env = os.getenv("FINETUNED_CKPT_PATH", str(ROOT_DIR / "ff.pt")).strip()
+# Keep fine-tuned checkpoint opt-in (set FINETUNED_CKPT_PATH to enable).
+_finetuned_ckpt_env = os.getenv("FINETUNED_CKPT_PATH", "").strip()
 FINETUNED_CKPT_PATH = Path(_finetuned_ckpt_env) if _finetuned_ckpt_env else None
+DISP_SCALE = float(os.getenv("DISP_SCALE", "5.0"))
 INFERENCE_TIMEOUT_SECONDS = int(os.getenv("INFERENCE_TIMEOUT_SECONDS", "7200"))
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -143,6 +145,7 @@ def get_config() -> dict:
         "finetuned_ckpt_host_compatible": ft_status["compatible"],
         "finetuned_ckpt_host_compatibility_reason": ft_status["reason"],
         "inference_timeout_seconds": INFERENCE_TIMEOUT_SECONDS,
+        "disp_scale": DISP_SCALE,
         "ffmpeg_on_path": shutil.which("ffmpeg") is not None,
         "ffprobe_on_path": shutil.which("ffprobe") is not None,
     }
@@ -221,6 +224,8 @@ async def convert_video(
             str(output_path),
             "--tmpdir",
             str(tmp_dir),
+            "--disp-scale",
+            str(DISP_SCALE),
         ]
         if include_finetuned and FINETUNED_CKPT_PATH:
             cmd.extend(["--finetuned-ckpt", str(FINETUNED_CKPT_PATH)])
@@ -283,12 +288,15 @@ async def convert_video(
     return {
         "job_id": job_id,
         "output_file": output_path.name,
-        "download_url": f"/api/downloads/{output_path.name}",
+        # Keep a static playback URL for <video src>, and a dedicated download endpoint for saves.
+        "playback_url": f"/api/downloads/{output_path.name}",
+        "download_url": f"/api/download/{output_path.name}",
         "model_path": str(MODEL_PATH),
         "finetuned_ckpt_path": str(FINETUNED_CKPT_PATH) if FINETUNED_CKPT_PATH else None,
         "weights_loaded_from": weights_loaded_from,
         "used_finetuned_weights_at_runtime": used_finetuned,
         "finetuned_fallback_note": finetuned_fallback_note,
+        "disp_scale": DISP_SCALE,
     }
 
 
