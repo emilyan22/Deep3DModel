@@ -36,6 +36,52 @@ weights_path = (opt.finetuned_ckpt or "").strip() or opt.model
 cuda_hint = weights_path
 
 
+def apply_tree_shrew_color_profile(frame_bgr: np.ndarray) -> np.ndarray:
+    """
+    Apply a perceptual color profile closer to tree-shrew-like RG discrimination:
+    - suppress rainbow/chromatic edge fringing,
+    - compress red/green separation toward yellow-brown tones,
+    - preserve blue/yellow structure,
+    - slightly boost blue-violet local contrast.
+    """
+    x = frame_bgr.astype(np.float32)
+    b = x[..., 0]
+    g = x[..., 1]
+    r = x[..., 2]
+
+    # 1) Reduce chromatic edge fringing (rainbow/neon outlines) by pulling
+    # high-chroma, high-edge pixels toward luminance.
+    luma = 0.114 * b + 0.587 * g + 0.299 * r
+    edge = np.abs(cv2.Laplacian(luma, cv2.CV_32F, ksize=3))
+    chroma = np.sqrt((r - g) ** 2 + (b - 0.5 * (r + g)) ** 2)
+    edge_w = np.clip((edge - 8.0) / 36.0, 0.0, 1.0)
+    chroma_w = np.clip((chroma - 16.0) / 64.0, 0.0, 1.0)
+    fringe_w = 0.7 * edge_w * chroma_w
+    b = b * (1.0 - fringe_w) + luma * fringe_w
+    g = g * (1.0 - fringe_w) + luma * fringe_w
+    r = r * (1.0 - fringe_w) + luma * fringe_w
+
+    # 2) Desaturate red/green opponent channel specifically.
+    rg_mean = 0.5 * (r + g)
+    rg_delta = (r - g) * 0.12  # strong RG compression
+    r = rg_mean + rg_delta
+    g = rg_mean - rg_delta
+
+    # 3) Collapse foliage/bark separation toward yellow-brown by anchoring
+    # both R and G toward a shared warm tone (without flattening whole image).
+    warm_anchor = np.clip(0.88 * rg_mean + 14.0, 0.0, 255.0)
+    r = 0.65 * r + 0.35 * warm_anchor
+    g = 0.70 * g + 0.30 * (0.88 * warm_anchor)
+
+    # 4) Keep blue/yellow channels comparatively informative and slightly
+    # enhance blue-violet contrast with a subtle unsharp mask on blue.
+    b_blur = cv2.GaussianBlur(b, (0, 0), 1.1)
+    b = np.clip(b + 0.22 * (b - b_blur), 0.0, 255.0)
+
+    out = np.stack([b, g, r], axis=-1)
+    return np.clip(out, 0.0, 255.0).astype(np.uint8)
+
+
 # Determine device before loading model so map_location moves all tensors (including TorchScript constants)
 if opt.gpu or ('cuda' in cuda_hint and torch.cuda.is_available()):
     if torch.cuda.is_available():
@@ -194,6 +240,7 @@ for frame in tqdm(range(video_length)):
     else:
         pred = torch.cat((left,right),dim=2)
     pred = transform.tensor2im(pred)
+    pred = apply_tree_shrew_color_profile(pred)
     impro.imwrite(os.path.join(opt.tmpdir, 'cvt','%06d'%(frame+1)+'.png'),pred,True)
 
 print("start write to video...")
