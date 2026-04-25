@@ -23,11 +23,21 @@ parser.add_argument('--disp-scale', default=1.0, type=float,
     help='disparity amplifier: right = left + scale*(model_out - left). '
          'Use ~5.0 to compensate for narrow-IPD (e.g. 12mm tree shrew vs 60mm human) '
          'when the frozen model was pretrained on human-scale stereo.')
+parser.add_argument(
+    "--finetuned-ckpt",
+    default="",
+    type=str,
+    help="Optional TorchScript .pt; when set, load weights from this file instead of --model "
+         "(finetune-rebased backend passes base --model plus this path).",
+)
 opt = parser.parse_args()
+
+weights_path = (opt.finetuned_ckpt or "").strip() or opt.model
+cuda_hint = weights_path
 
 
 # Determine device before loading model so map_location moves all tensors (including TorchScript constants)
-if opt.gpu or ('cuda' in opt.model and torch.cuda.is_available()):
+if opt.gpu or ('cuda' in cuda_hint and torch.cuda.is_available()):
     if torch.cuda.is_available():
         device = torch.device(f'cuda:{opt.gpu_id}')
         print(f"Using CUDA GPU: {opt.gpu_id}")
@@ -45,7 +55,7 @@ else:
     print("Using CPU")
 
 try:
-    net = torch.jit.load(opt.model, map_location=device)
+    net = torch.jit.load(weights_path, map_location=device)
 except TypeError as exc:
     # Some TorchScript checkpoints include float64 tensors that MPS cannot load.
     # Fall back to CPU so inference can proceed on Apple Silicon machines.
@@ -53,7 +63,7 @@ except TypeError as exc:
         print("MPS load failed due to float64 tensors; falling back to CPU.")
         device = torch.device("cpu")
         opt.gpu_id = -1
-        net = torch.jit.load(opt.model, map_location=device)
+        net = torch.jit.load(weights_path, map_location=device)
     else:
         raise
 if opt.gpu_id >= 0:
@@ -80,7 +90,7 @@ def infer_model_resolution(model_path, fallback_w, fallback_h):
         )
         return int(fallback_w), int(fallback_h)
 
-out_width, out_height = infer_model_resolution(opt.model, width, height)
+out_width, out_height = infer_model_resolution(weights_path, width, height)
 
 util.clean_tempfiles(opt.tmpdir)
 util.makedirs(os.path.split(opt.out)[0])
