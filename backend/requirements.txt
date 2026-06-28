@@ -1,12 +1,1 @@
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-python-multipart==0.0.9
-gdown>=5.0,<6
-
-# Deep3D inference.py (same env as uvicorn — run: pip install -r backend/requirements.txt)
-numpy>=1.19,<3
-opencv-python>=4.5
-tqdm>=4.60
-Pillow>=9.0
-torch>=2.0
-torchvision>=0.15
+-r ../requirements.txt
