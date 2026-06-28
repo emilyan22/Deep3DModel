@@ -2,6 +2,7 @@
   "name": "deep3d-model",
   "private": true,
   "scripts": {
+    "build": "npm run build --prefix Deep3D/front-end",
     "dev": "npm run dev --prefix Deep3D/front-end",
     "frontend": "npm run dev --prefix Deep3D/front-end",
     "backend": "./.venv/bin/python -m uvicorn backend.app:app --host 0.0.0.0 --port 8000",

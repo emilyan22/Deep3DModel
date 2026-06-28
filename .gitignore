@@ -1,0 +1,22 @@
+# Local-only hardware driver repo (was a broken git submodule)
+LCD-show/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Backend runtime artifacts
+backend/uploads/
+backend/outputs/
+
+# Large local media / model files
+*.avi
+*.mp4
+*.mov
+*.pt
+checkpoints/
+
+# OS / editor
+.DS_Store
+.cursor/
