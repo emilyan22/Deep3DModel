@@ -474,11 +474,13 @@
     <input id="video-file" class="file-input" type="file" accept="image/*,video/*,video/mp4,.mp4,.mov,.avi,.mkv" />
   </div>
 
-  <script>
-    // API lives on port 8000. Only use same-origin `/api/...` when this page is also served from that port.
-    // Otherwise (Vite, Live Server, http.server, etc.) same-origin POST would hit the static server → 404.
-    // Direct http://127.0.0.1:8000 is allowed by backend CORS for localhost / 127.0.0.1 on any port.
+  <script type="module">
+    // Production: set VITE_API_URL to your Railway backend (e.g. https://your-app.up.railway.app).
+    // Local dev: Vite proxies /api on port 8000, or falls back to http://127.0.0.1:8000 with backend CORS.
     const API_BASE = (() => {
+      const configured = (import.meta.env.VITE_API_URL || "").trim().replace(/\/$/, "");
+      if (configured) return configured;
+
       const { hostname, port, protocol } = window.location;
       if (protocol === "file:") return "http://127.0.0.1:8000";
       const local =
@@ -708,7 +710,9 @@
         const raw = String(error && error.message ? error.message : error);
         const hint =
           raw === "Failed to fetch" || raw === "Load failed" || raw === "NetworkError when attempting to fetch resource."
-            ? " Cannot reach the API. From the repo root run: uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000 then open this page via npm run dev (not file://)."
+            ? API_BASE
+              ? ` Cannot reach the API at ${API_BASE}. Check that the backend is running and FRONTEND_URL is set to this site's origin.`
+              : " Cannot reach the API. From the repo root run: uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000 then open this page via npm run dev (not file://)."
             : "";
         resultError.textContent = raw + hint;
         setDownloadDisabled();

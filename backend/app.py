@@ -28,6 +28,29 @@ FINETUNED_CKPT_PATH = Path(_finetuned_ckpt_env) if _finetuned_ckpt_env else None
 DISP_SCALE = float(os.getenv("DISP_SCALE", "5.0"))
 INFERENCE_TIMEOUT_SECONDS = int(os.getenv("INFERENCE_TIMEOUT_SECONDS", "7200"))
 
+LOCALHOST_CORS_REGEX = r"https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
+
+def _allowed_cors_origins() -> list[str]:
+    """Explicit browser origins from FRONTEND_URL and/or comma-separated CORS_ORIGINS."""
+    seen: set[str] = set()
+    origins: list[str] = []
+    for env_name in ("FRONTEND_URL", "CORS_ORIGINS"):
+        for part in os.getenv(env_name, "").split(","):
+            origin = part.strip().rstrip("/")
+            if origin and origin not in seen:
+                seen.add(origin)
+                origins.append(origin)
+    return origins
+
+
+def _cors_origin_regex() -> str:
+    extra = os.getenv("CORS_ORIGIN_REGEX", "").strip()
+    if extra:
+        return f"({LOCALHOST_CORS_REGEX})|({extra})"
+    return LOCALHOST_CORS_REGEX
+
+
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -110,10 +133,11 @@ def _torchscript_compatibility(model_path_str: str) -> dict:
 
 app = FastAPI(title="Deep3D API", version="0.1.0")
 
-# Allow any localhost / 127.0.0.1 origin with any port (Vite, Live Server, etc.)
+# Local dev: localhost / 127.0.0.1 on any port. Production: set FRONTEND_URL (and optional CORS_ORIGINS).
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=_allowed_cors_origins(),
+    allow_origin_regex=_cors_origin_regex(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
