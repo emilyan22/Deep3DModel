@@ -17,6 +17,9 @@ backend/outputs/
 *.pt
 checkpoints/
 
+# Node
+node_modules/
+
 # OS / editor
 .DS_Store
 .cursor/
