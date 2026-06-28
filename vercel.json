@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "installCommand": "npm install --prefix Deep3D/front-end",
+  "installCommand": "npm install --prefix Deep3D/front-end --include=dev",
   "buildCommand": "npm run build --prefix Deep3D/front-end",
   "outputDirectory": "Deep3D/front-end/dist"
 }
