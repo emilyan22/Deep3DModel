@@ -1,0 +1,31 @@
+# Frontend (hosted on Vercel)
+Deep3D/front-end/node_modules
+Deep3D/front-end/dist
+
+# Local environments and caches
+.venv
+node_modules
+__pycache__
+*.pyc
+
+# Training checkpoints (~2GB in git) — not needed at runtime
+checkpoints
+
+# Runtime artifacts
+backend/uploads
+backend/outputs
+backend/tmp
+
+# Large local media / weights (downloaded on startup)
+*.avi
+*.mp4
+*.mov
+*.pt
+
+# Editor / OS / misc
+.git
+.github
+.cursor
+.DS_Store
+LCD-show
+assets

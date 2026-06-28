@@ -2,7 +2,6 @@
 builder = "RAILPACK"
 
 [deploy]
-startCommand = "uvicorn backend.app:app --host 0.0.0.0 --port $PORT"
+startCommand = "sh scripts/railway_start.sh"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 300
-preDeployCommand = ["python scripts/download_deep3d_model.py"]

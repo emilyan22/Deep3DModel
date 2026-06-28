@@ -5,8 +5,11 @@ gdown>=5.0,<6
 
 # Deep3D inference.py (same env as uvicorn)
 numpy>=1.19,<3
-opencv-python>=4.5
+opencv-python-headless>=4.5
 tqdm>=4.60
 Pillow>=9.0
+
+# CPU-only PyTorch (much smaller than default CUDA wheels on Railway)
+--extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0
 torchvision>=0.15
