@@ -3,9 +3,6 @@
   "installCommand": "npm ci --prefix Deep3D/front-end",
   "buildCommand": "npm run build --prefix Deep3D/front-end",
   "outputDirectory": "Deep3D/front-end/dist",
-  "env": {
-    "VITE_API_URL": "https://deep3dmodel-production.up.railway.app"
-  },
   "rewrites": [
     {
       "source": "/api/:path*",

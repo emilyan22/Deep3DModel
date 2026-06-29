@@ -477,13 +477,15 @@
   <script type="module">
     // Production: set VITE_API_URL to your Railway backend (e.g. https://your-app.up.railway.app).
     // Local dev: Vite proxies /api on port 8000, or falls back to http://127.0.0.1:8000 with backend CORS.
-    const PRODUCTION_API = "https://deep3dmodel-production.up.railway.app";
-
     const API_BASE = (() => {
+      const { hostname, port, protocol } = window.location;
+
+      // Vercel: same-origin /api is proxied to Railway in vercel.json (no CORS).
+      if (hostname.endsWith(".vercel.app")) return "";
+
       const configured = (import.meta.env.VITE_API_URL || "").trim().replace(/\/$/, "");
       if (configured) return configured;
 
-      const { hostname, port, protocol } = window.location;
       if (protocol === "file:") return "http://127.0.0.1:8000";
       const local =
         hostname === "localhost" ||
@@ -491,10 +493,6 @@
         hostname === "[::1]";
       if (local && port === "8000") return "";
       if (local) return "http://127.0.0.1:8000";
-      // Production on Vercel — API is on Railway (VITE_API_URL may be unset if not redeployed).
-      if (hostname === "shrewscape.vercel.app" || hostname.endsWith(".vercel.app")) {
-        return PRODUCTION_API;
-      }
       return "";
     })();
 
