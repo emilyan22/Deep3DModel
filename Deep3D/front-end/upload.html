@@ -477,11 +477,13 @@
   <script type="module">
     // Production: set VITE_API_URL to your Railway backend (e.g. https://your-app.up.railway.app).
     // Local dev: Vite proxies /api on port 8000, or falls back to http://127.0.0.1:8000 with backend CORS.
+    const RAILWAY_API = "https://deep3dmodel-production.up.railway.app";
+
     const API_BASE = (() => {
       const { hostname, port, protocol } = window.location;
 
-      // Vercel: same-origin /api is proxied to Railway in vercel.json (no CORS).
-      if (hostname.endsWith(".vercel.app")) return "";
+      // Vercel rewrites time out (~60s); inference can take several minutes — call Railway directly.
+      if (hostname.endsWith(".vercel.app")) return RAILWAY_API;
 
       const configured = (import.meta.env.VITE_API_URL || "").trim().replace(/\/$/, "");
       if (configured) return configured;
@@ -712,12 +714,19 @@
         resultVideo.hidden = true;
         resultError.hidden = false;
         const raw = String(error && error.message ? error.message : error);
-        const hint =
-          raw === "Failed to fetch" || raw === "Load failed" || raw === "NetworkError when attempting to fetch resource."
-            ? API_BASE
-              ? ` Cannot reach the API at ${API_BASE}. Check that the backend is running and FRONTEND_URL is set to this site's origin.`
-              : " Cannot reach the API. From the repo root run: uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000 then open this page via npm run dev (not file://)."
-            : "";
+        let hint = "";
+        if (raw.includes("(502)")) {
+          hint =
+            " The backend may be restarting or out of memory. Wait a minute, confirm /api/health on Railway, then try a shorter clip.";
+        } else if (
+          raw === "Failed to fetch" ||
+          raw === "Load failed" ||
+          raw === "NetworkError when attempting to fetch resource."
+        ) {
+          hint = API_BASE
+            ? ` Cannot reach the API at ${API_BASE}. Check that the backend is running and FRONTEND_URL is set to this site's origin.`
+            : " Cannot reach the API. From the repo root run: uvicorn backend.app:app --reload --host 127.0.0.1 --port 8000 then open this page via npm run dev (not file://).";
+        }
         resultError.textContent = raw + hint;
         setDownloadDisabled();
       } finally {

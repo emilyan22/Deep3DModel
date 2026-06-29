@@ -2,11 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "npm ci --prefix Deep3D/front-end",
   "buildCommand": "npm run build --prefix Deep3D/front-end",
-  "outputDirectory": "Deep3D/front-end/dist",
-  "rewrites": [
-    {
-      "source": "/api/:path*",
-      "destination": "https://deep3dmodel-production.up.railway.app/api/:path*"
-    }
-  ]
+  "outputDirectory": "Deep3D/front-end/dist"
 }
