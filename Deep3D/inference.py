@@ -8,6 +8,10 @@ import numpy as np
 import cv2
 import torch
 
+torch.set_num_threads(1)
+if hasattr(torch, "set_num_interop_threads"):
+    torch.set_num_interop_threads(1)
+
 from data import transform,impro
 from utils import util,ffmpeg
 

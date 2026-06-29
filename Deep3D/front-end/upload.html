@@ -481,22 +481,38 @@
 
     const API_BASE = (() => {
       const { hostname, port, protocol } = window.location;
-
-      // Vercel rewrites time out (~60s); inference can take several minutes — call Railway directly.
-      if (hostname.endsWith(".vercel.app")) return RAILWAY_API;
-
-      const configured = (import.meta.env.VITE_API_URL || "").trim().replace(/\/$/, "");
-      if (configured) return configured;
-
-      if (protocol === "file:") return "http://127.0.0.1:8000";
       const local =
         hostname === "localhost" ||
         hostname === "127.0.0.1" ||
         hostname === "[::1]";
+
+      if (protocol === "file:") return "http://127.0.0.1:8000";
       if (local && port === "8000") return "";
       if (local) return "http://127.0.0.1:8000";
-      return "";
+
+      const configured = (import.meta.env.VITE_API_URL || "").trim().replace(/\/$/, "");
+      if (configured) return configured;
+
+      // Any deployed site (Vercel or custom domain) talks to Railway directly.
+      return RAILWAY_API;
     })();
+
+    async function waitForApi(maxAttempts = 10, delayMs = 3000) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          const response = await fetch(`${API_BASE}/api/health`, {
+            method: "GET",
+            cache: "no-store",
+          });
+          if (response.ok) return true;
+        } catch {
+          // Server may be cold-starting or restarting after a prior job.
+        }
+        processingText.textContent = `Connecting to the server… (${attempt}/${maxAttempts})`;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      return false;
+    }
 
     /** FastAPI returns `detail` as a string or a validation error array */
     function extractDetail(payload) {
@@ -669,6 +685,13 @@
       processingBlock.hidden = false;
       processingText.textContent = "Processing your video… This can take a few minutes.";
       setDownloadDisabled();
+
+      const ready = await waitForApi();
+      if (!ready) {
+        throw new Error(
+          `Cannot reach the API at ${API_BASE}. The server may be restarting — wait a minute and try again.`
+        );
+      }
 
       const body = new FormData();
       body.append("file", fileInput.files[0]);

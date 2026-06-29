@@ -59,6 +59,18 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _inference_env() -> dict[str, str]:
+    """Keep PyTorch/OpenBLAS thread pools small to reduce peak RAM on small hosts."""
+    return {
+        **os.environ,
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "NUMEXPR_NUM_THREADS": "1",
+        "MALLOC_ARENA_MAX": "2",
+    }
+
+
 def _image_file_to_mp4(src: Path, dest: Path, suffix: str) -> None:
     """Build a short H.264 MP4 from a still image or short GIF so inference can run."""
     vf_even = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
@@ -313,6 +325,7 @@ async def convert_video(
             capture_output=True,
             text=True,
             timeout=INFERENCE_TIMEOUT_SECONDS,
+            env=_inference_env(),
         )
     except subprocess.TimeoutExpired as exc:
         raise HTTPException(status_code=504, detail="Inference timed out") from exc
@@ -332,6 +345,7 @@ async def convert_video(
                     capture_output=True,
                     text=True,
                     timeout=INFERENCE_TIMEOUT_SECONDS,
+                    env=_inference_env(),
                 )
             except subprocess.CalledProcessError as exc2:
                 err2 = exc2.stderr or exc2.stdout or "Inference failed"
