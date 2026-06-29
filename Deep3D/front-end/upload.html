@@ -452,7 +452,7 @@
           <div class="processing-spinner" role="status" aria-label="Loading"></div>
           <p id="processing-text" class="processing-text">Processing your video…</p>
         </div>
-        <video id="result-video" class="result-video" controls playsinline hidden></video>
+        <video id="result-video" class="result-video" controls playsinline crossorigin="anonymous" hidden></video>
         <p id="result-error" class="result-error" hidden></p>
       </div>
       <div class="result-actions">
@@ -671,6 +671,25 @@
       return entry;
     }
 
+    async function pollJob(jobId, maxAttempts = 600, delayMs = 3000) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const response = await fetch(`${API_BASE}/api/jobs/${jobId}`, { cache: "no-store" });
+        if (!response.ok) {
+          const errorPayload = await response.json().catch(() => ({}));
+          const detail = extractDetail(errorPayload);
+          throw new Error(detail || `Could not check job status (${response.status})`);
+        }
+        const payload = await response.json();
+        if (payload.status === "complete") return payload;
+        if (payload.status === "failed") {
+          throw new Error(payload.detail || "Conversion failed");
+        }
+        processingText.textContent = `Processing your video… (${attempt * (delayMs / 1000)}s elapsed)`;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      throw new Error("Conversion timed out while waiting for the result.");
+    }
+
     async function startConversion() {
       if (!fileInput.files || fileInput.files.length === 0) return;
       if (isConverting) return;
@@ -710,7 +729,11 @@
           throw new Error(detail || `Conversion failed (${response.status})`);
         }
 
-        const payload = await response.json();
+        let payload = await response.json();
+        if (payload.status === "processing" && payload.job_id) {
+          payload = await pollJob(payload.job_id);
+        }
+
         const playbackPath = payload.playback_url || payload.download_url;
         const outputUrl = `${API_BASE}${playbackPath}`;
         const downloadUrl = `${API_BASE}${payload.download_url}`;

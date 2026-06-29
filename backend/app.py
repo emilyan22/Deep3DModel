@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import uuid
 from functools import lru_cache
 from pathlib import Path
@@ -57,6 +58,21 @@ def _cors_origin_regex() -> str:
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+_jobs_lock = threading.Lock()
+_jobs: dict[str, dict] = {}
+
+
+def _set_job(job_id: str, **fields) -> None:
+    with _jobs_lock:
+        _jobs.setdefault(job_id, {})
+        _jobs[job_id].update(fields)
+
+
+def _get_job(job_id: str) -> dict | None:
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        return dict(job) if job else None
 
 
 def _inference_env() -> dict[str, str]:
@@ -220,6 +236,145 @@ def _ensure_model_weights() -> None:
         )
 
 
+def _looks_like_cuda_locked_model(error_text: str) -> bool:
+    e = (error_text or "").lower()
+    return (
+        "device=torch.device(\"cuda:0\")" in e
+        or "arguments from the 'cuda' backend" in e
+        or "could not run 'aten::empty_strided'" in e
+    )
+
+
+def _build_inference_cmd(
+    *,
+    video_for_inference: Path,
+    output_path: Path,
+    tmp_dir: Path,
+    inv: bool,
+    include_finetuned: bool,
+) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(INFERENCE_SCRIPT),
+        "--model",
+        str(MODEL_PATH),
+        "--video",
+        str(video_for_inference),
+        "--out",
+        str(output_path),
+        "--tmpdir",
+        str(tmp_dir),
+        "--disp-scale",
+        str(DISP_SCALE),
+    ]
+    if include_finetuned and FINETUNED_CKPT_PATH:
+        cmd.extend(["--finetuned-ckpt", str(FINETUNED_CKPT_PATH)])
+    if inv:
+        cmd.append("--inv")
+    return cmd
+
+
+def _run_inference(
+    *,
+    video_for_inference: Path,
+    output_path: Path,
+    tmp_dir: Path,
+    inv: bool,
+) -> dict:
+    want_finetuned = bool(FINETUNED_CKPT_PATH)
+    used_finetuned = want_finetuned
+    weights_loaded_from = str(FINETUNED_CKPT_PATH) if want_finetuned else str(MODEL_PATH)
+    finetuned_fallback_note: str | None = None
+
+    try:
+        subprocess.run(
+            _build_inference_cmd(
+                video_for_inference=video_for_inference,
+                output_path=output_path,
+                tmp_dir=tmp_dir,
+                inv=inv,
+                include_finetuned=want_finetuned,
+            ),
+            cwd=str(DEEP3D_DIR),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=INFERENCE_TIMEOUT_SECONDS,
+            env=_inference_env(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="Inference timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        primary_error = exc.stderr or exc.stdout or ""
+        if want_finetuned and _looks_like_cuda_locked_model(primary_error):
+            used_finetuned = False
+            weights_loaded_from = str(MODEL_PATH)
+            finetuned_fallback_note = (
+                "Fine-tuned TorchScript requires CUDA in the graph; retried with base --model only."
+            )
+            try:
+                subprocess.run(
+                    _build_inference_cmd(
+                        video_for_inference=video_for_inference,
+                        output_path=output_path,
+                        tmp_dir=tmp_dir,
+                        inv=inv,
+                        include_finetuned=False,
+                    ),
+                    cwd=str(DEEP3D_DIR),
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=INFERENCE_TIMEOUT_SECONDS,
+                    env=_inference_env(),
+                )
+            except subprocess.CalledProcessError as exc2:
+                err2 = exc2.stderr or exc2.stdout or "Inference failed"
+                raise HTTPException(status_code=500, detail=err2[-3000:]) from exc2
+        else:
+            raise HTTPException(
+                status_code=500, detail=(primary_error or "Inference failed")[-3000:]
+            ) from exc
+
+    if not output_path.exists():
+        raise HTTPException(status_code=500, detail="Output file was not generated")
+
+    return {
+        "weights_loaded_from": weights_loaded_from,
+        "used_finetuned_weights_at_runtime": used_finetuned,
+        "finetuned_fallback_note": finetuned_fallback_note,
+    }
+
+
+def _run_conversion_job(
+    job_id: str,
+    *,
+    video_for_inference: Path,
+    output_path: Path,
+    tmp_dir: Path,
+    inv: bool,
+) -> None:
+    try:
+        meta = _run_inference(
+            video_for_inference=video_for_inference,
+            output_path=output_path,
+            tmp_dir=tmp_dir,
+            inv=inv,
+        )
+        _set_job(
+            job_id,
+            status="complete",
+            output_file=output_path.name,
+            playback_url=f"/api/downloads/{output_path.name}",
+            download_url=f"/api/download/{output_path.name}",
+            **meta,
+        )
+    except HTTPException as exc:
+        _set_job(job_id, status="failed", detail=str(exc.detail))
+    except Exception as exc:
+        _set_job(job_id, status="failed", detail=str(exc))
+
+
 @app.post("/api/convert")
 async def convert_video(
     file: UploadFile = File(...),
@@ -283,94 +438,50 @@ async def convert_video(
     else:
         video_for_inference = input_path
 
-    def _build_cmd(include_finetuned: bool) -> list[str]:
-        cmd = [
-            sys.executable,
-            str(INFERENCE_SCRIPT),
-            "--model",
-            str(MODEL_PATH),
-            "--video",
-            str(video_for_inference),
-            "--out",
-            str(output_path),
-            "--tmpdir",
-            str(tmp_dir),
-            "--disp-scale",
-            str(DISP_SCALE),
-        ]
-        if include_finetuned and FINETUNED_CKPT_PATH:
-            cmd.extend(["--finetuned-ckpt", str(FINETUNED_CKPT_PATH)])
-        if inv:
-            cmd.append("--inv")
-        return cmd
-
-    def _looks_like_cuda_locked_model(error_text: str) -> bool:
-        e = (error_text or "").lower()
-        return (
-            "device=torch.device(\"cuda:0\")" in e
-            or "arguments from the 'cuda' backend" in e
-            or "could not run 'aten::empty_strided'" in e
-        )
-
-    want_finetuned = bool(FINETUNED_CKPT_PATH)
-    used_finetuned = want_finetuned
-    weights_loaded_from = str(FINETUNED_CKPT_PATH) if want_finetuned else str(MODEL_PATH)
-    finetuned_fallback_note: str | None = None
-
-    try:
-        subprocess.run(
-            _build_cmd(include_finetuned=want_finetuned),
-            cwd=str(DEEP3D_DIR),
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=INFERENCE_TIMEOUT_SECONDS,
-            env=_inference_env(),
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise HTTPException(status_code=504, detail="Inference timed out") from exc
-    except subprocess.CalledProcessError as exc:
-        primary_error = exc.stderr or exc.stdout or ""
-        if want_finetuned and _looks_like_cuda_locked_model(primary_error):
-            used_finetuned = False
-            weights_loaded_from = str(MODEL_PATH)
-            finetuned_fallback_note = (
-                "Fine-tuned TorchScript requires CUDA in the graph; retried with base --model only."
-            )
-            try:
-                subprocess.run(
-                    _build_cmd(include_finetuned=False),
-                    cwd=str(DEEP3D_DIR),
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=INFERENCE_TIMEOUT_SECONDS,
-                    env=_inference_env(),
-                )
-            except subprocess.CalledProcessError as exc2:
-                err2 = exc2.stderr or exc2.stdout or "Inference failed"
-                raise HTTPException(status_code=500, detail=err2[-3000:]) from exc2
-        else:
-            raise HTTPException(
-                status_code=500, detail=(primary_error or "Inference failed")[-3000:]
-            ) from exc
-
-    if not output_path.exists():
-        raise HTTPException(status_code=500, detail="Output file was not generated")
+    _set_job(job_id, status="processing")
+    worker = threading.Thread(
+        target=_run_conversion_job,
+        kwargs={
+            "job_id": job_id,
+            "video_for_inference": video_for_inference,
+            "output_path": output_path,
+            "tmp_dir": tmp_dir,
+            "inv": inv,
+        },
+        daemon=True,
+    )
+    worker.start()
 
     return {
         "job_id": job_id,
-        "output_file": output_path.name,
-        # Keep a static playback URL for <video src>, and a dedicated download endpoint for saves.
-        "playback_url": f"/api/downloads/{output_path.name}",
-        "download_url": f"/api/download/{output_path.name}",
-        "model_path": str(MODEL_PATH),
-        "finetuned_ckpt_path": str(FINETUNED_CKPT_PATH) if FINETUNED_CKPT_PATH else None,
-        "weights_loaded_from": weights_loaded_from,
-        "used_finetuned_weights_at_runtime": used_finetuned,
-        "finetuned_fallback_note": finetuned_fallback_note,
-        "disp_scale": DISP_SCALE,
+        "status": "processing",
+        "poll_url": f"/api/jobs/{job_id}",
     }
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job_status(job_id: str) -> dict:
+    job = _get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+    payload: dict = {"job_id": job_id, "status": job.get("status", "processing")}
+    if job.get("status") == "complete":
+        payload.update(
+            {
+                "output_file": job.get("output_file"),
+                "playback_url": job.get("playback_url"),
+                "download_url": job.get("download_url"),
+                "model_path": str(MODEL_PATH),
+                "finetuned_ckpt_path": str(FINETUNED_CKPT_PATH) if FINETUNED_CKPT_PATH else None,
+                "weights_loaded_from": job.get("weights_loaded_from"),
+                "used_finetuned_weights_at_runtime": job.get("used_finetuned_weights_at_runtime"),
+                "finetuned_fallback_note": job.get("finetuned_fallback_note"),
+                "disp_scale": DISP_SCALE,
+            }
+        )
+    elif job.get("status") == "failed":
+        payload["detail"] = job.get("detail", "Conversion failed")
+    return payload
 
 
 @app.get("/api/download/{file_name}")
