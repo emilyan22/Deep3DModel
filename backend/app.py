@@ -6,7 +6,6 @@ import uuid
 from functools import lru_cache
 from pathlib import Path
 
-import torch
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -41,14 +40,19 @@ def _allowed_cors_origins() -> list[str]:
             if origin and origin not in seen:
                 seen.add(origin)
                 origins.append(origin)
+    # Production default when env vars are not injected by the host.
+    for origin in ("https://shrewscape.vercel.app",):
+        if origin not in seen:
+            seen.add(origin)
+            origins.append(origin)
     return origins
 
 
 def _cors_origin_regex() -> str:
     extra = os.getenv("CORS_ORIGIN_REGEX", "").strip()
-    if extra:
-        return f"({LOCALHOST_CORS_REGEX})|({extra})"
-    return LOCALHOST_CORS_REGEX
+    if not extra:
+        extra = r"https://([a-z0-9-]+\.)*vercel\.app"
+    return f"({LOCALHOST_CORS_REGEX})|({extra})"
 
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -114,6 +118,8 @@ def _require_ffmpeg_bins() -> None:
 
 @lru_cache(maxsize=8)
 def _torchscript_compatibility(model_path_str: str) -> dict:
+    import torch
+
     model_path = Path(model_path_str)
     if not model_path.exists():
         return {"exists": False, "compatible": False, "reason": "model file not found"}
@@ -175,6 +181,33 @@ def get_config() -> dict:
     }
 
 
+def _ensure_model_weights() -> None:
+    if MODEL_PATH.exists() and MODEL_PATH.stat().st_size > 1_000_000:
+        return
+    script = ROOT_DIR / "scripts" / "download_deep3d_model.py"
+    if not script.exists():
+        raise HTTPException(status_code=500, detail="download_deep3d_model.py not found")
+    try:
+        subprocess.run(
+            [sys.executable, str(script)],
+            cwd=str(ROOT_DIR),
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="Model download timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        err = (exc.stderr or exc.stdout or "Model download failed")[-2000:]
+        raise HTTPException(status_code=500, detail=err) from exc
+    if not MODEL_PATH.exists():
+        raise HTTPException(
+            status_code=500,
+            detail=f"Model file not found at {MODEL_PATH} after download attempt.",
+        )
+
+
 @app.post("/api/convert")
 async def convert_video(
     file: UploadFile = File(...),
@@ -182,6 +215,8 @@ async def convert_video(
 ) -> dict:
     if not INFERENCE_SCRIPT.exists():
         raise HTTPException(status_code=500, detail="inference.py not found")
+
+    _ensure_model_weights()
 
     if not MODEL_PATH.exists():
         raise HTTPException(
